@@ -1,0 +1,172 @@
+---
+title: "VICTORIA COVID-19 STATUS"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+```
+
+Home
+================================
+The aim of this dashboard is to present a convenient summary of COVID-19 cases within the state of Victoria (at the time of creation), by local government areas, in a interactive and easily comprehensible form. The dashboard will also step through the overall process of creating the end result.
+
+### **Packages Used**
+```{r packages, echo=TRUE}
+library(polite)
+library(rvest)
+library(maps)
+library(ggmap)
+library(ggplot2)
+library(jsonlite)
+library(tidyverse)
+library(leaflet)
+library(DT)
+```
+
+
+Methodology Pt. 1
+================================
+
+### **Webscraping**
+
+First the website needs to be checked to see if it is legally scrapable. If so, the url is read in to obtain the html
+of the website.
+
+```{r web-scrape, echo=TRUE}
+vic_active_url <-"https://covidlive.com.au/report/active-cases-by-lga" 
+bow(vic_active_url)
+
+vic_cases_url <- "https://covidlive.com.au/report/cases-by-lga"
+bow(vic_cases_url)
+
+html_vic_active <- read_html(vic_active_url)
+html_vic_cases <- read_html(vic_cases_url)
+  
+```
+
+``` {r table-extraction-function, echo=TRUE}
+extract_table <- function(table_number, html) {
+  table <- html %>%
+    html_nodes("table") %>%
+    .[[table_number]] %>%
+    html_table()
+  
+  return(table)
+}
+
+```
+
+
+
+We then extract tables with the user defined function extract_table()
+
+``` {r, echo=TRUE}
+vic_lga_active_cases_raw <- extract_table(2, html_vic_active)
+
+vic_lga_cases_raw <- extract_table(2, html_vic_cases)
+
+```
+
+Methodology Pt. 2
+================================
+
+### **Data wrangling**
+Removing unneccessary columns and general cleaning
+
+```{r, echo=TRUE}
+vic_lga_cases <- vic_lga_cases_raw[, -c(2,4,5)] %>%
+  mutate(LGA = toupper(LGA))
+
+vic_lga_active_cases <- vic_lga_active_cases_raw[, -c(2,4,5)] %>%
+  mutate(LGA = toupper(LGA)) 
+
+```
+
+``` {r join, echo=TRUE}
+vic_covid_cases <- left_join(vic_lga_cases, vic_lga_active_cases, by = c("LGA" = "LGA"))
+
+```
+
+### **Coordinates Data Frame**
+
+Reading in JSON map data and constructing it as a data frame in R. 
+Augmenting name of each region and removing duplicates
+
+``` {r coordinates, echo=TRUE}
+jdata <- fromJSON("MapData.json")
+json_df <- as.data.frame(jdata)
+coordinates_df <- json_df[1:3]
+
+coordinates_df <- coordinates_df %>%
+  mutate(name = str_remove_all(name, " Shire| Council| City| RURAL"))
+
+coordinates_df <- coordinates_df %>%
+  distinct(name, .keep_all = TRUE)
+
+### REMOVE BOUNDARIES
+coordinates_df <- coordinates_df[, -1]
+  
+
+```
+
+
+Join two datasets together, splitting the labelpoint column into LATITUDE and LONGITUDE columns, renaming appropriate columns and rearranging order of columns
+
+``` {r vic-covid-cases-map, echo=TRUE}
+vic_covid_cases_map <- left_join(coordinates_df, vic_covid_cases, by = c("name" = "LGA"))
+
+vic_covid_cases_map <- na.omit(vic_covid_cases_map)
+
+vic_covid_cases_map <- vic_covid_cases_map %>%
+  unnest(labelpoint) %>%
+  group_by(name) %>%
+  mutate(col=seq_along(name)) %>%
+  spread(key = col, value = labelpoint) %>%
+  rename("LGA"="name", "LATITUDE"="1", "LONGITUDE"="2","TOTAL CASES"="CASES")
+  
+  
+vic_covid_cases_map <- vic_covid_cases_map[, c(1,3,2,4,5)]
+
+
+```
+
+Now we create a new column named 'CONTENT' which will contain HTML and CSS code for each LGA for each of their own label points.
+
+``` {r content-column, echo=TRUE}
+vic_covid_cases_map$CONTENT <- paste(sep="", "<style> h3 {text-align: center; line-height:0px} p {text-align: center;} </style>",
+paste(sep="", "<h3 style='font-size:14px;font-family:Verdana;'><b>",vic_covid_cases_map$LGA,"</b></h3>"), "<p>",
+paste(sep="", "ACTIVE: ",vic_covid_cases_map$`ACTIVE`), "<br>",paste(sep="", "TOTAL: ", vic_covid_cases_map$`TOTAL CASES`), "</p>")
+
+
+
+```
+
+Data Visualisation
+================================
+
+Row
+-----------------------------------
+
+### **Map of COVID-19 cases in Victoria, by LGA** {data-width=650}
+
+``` {r map}
+map <- leaflet(vic_covid_cases_map) %>%
+  setView(lng = 145.09511086700002, lat = -37.85334954799998, zoom = 12) %>%
+  addProviderTiles(providers$CartoDB.PositronNoLabels) %>%  
+  addCircleMarkers(lng = ~LONGITUDE, lat = ~LATITUDE, popup =~CONTENT, radius = ~`ACTIVE`*2,options = popupOptions(closeButton = FALSE, closeOnClick = FALSE))
+
+map
+
+```
+Row
+-----------------------------------
+
+### **Table COVID-19 cases in Victoria, by LGA** {data-width=350}
+
+```{r table}
+datatable(vic_covid_cases, rownames = FALSE, selection = c("single"))
+
+```
